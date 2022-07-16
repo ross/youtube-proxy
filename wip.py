@@ -4,13 +4,14 @@
 # and pytube
 
 from flask import Flask, Response
+from http.client import HTTPConnection  # py3
 from json import dumps
 from logging import getLogger
+from logging.config import dictConfig
 from os import environ
 from requests import Session
 from struct import unpack
 from time import sleep, time
-import logging
 
 
 class YouTube(object):
@@ -212,10 +213,30 @@ class Transcoder(object):
         # .aac and the mime type audio/aac.
 
 
-logging.basicConfig(level=logging.DEBUG)
-getLogger('urllib3.connectionpool').level = logging.INFO
-# from http.client import HTTPConnection  # py3
-# HTTPConnection.debuglevel = 1
+level = environ.get('LOGGING', 'INFO')
+if level == 'DEBUG':
+    HTTPConnection.debuglevel = 1
+dictConfig(
+    {
+        'version': 1,
+        'disable_existing_loggers': False,
+        'formatters': {
+            'simple': {
+                'format': '%(asctime)s.%(msecs)03d %(levelname)-5s %(name)s %(message)s',
+                'datefmt': '%Y-%m-%dT%H:%M:%S',
+            }
+        },
+        'handlers': {
+            'console': {
+                'class': 'logging.StreamHandler',
+                'level': level,
+                'formatter': 'simple',
+            }
+        },
+        'root': {'level': level, 'handlers': ('console',)},
+        'loggers': {'urllib3.connectionpool': {'level': 'INFO'}},
+    }
+)
 
 app = Flask('sonos-proxy')
 
@@ -227,6 +248,6 @@ def youtube(vid):
 
 
 if __name__ == '__main__':
-    port = int(environ.get('PORT', 8082))
-    print(f'e.g. http://<host-fqdn>:{port}/jfKfPfyJRdk')
+    port = int(environ.get('PORT', 9182))
+    getLogger().info('Example URL: http://<host-fqdn>:%d/jfKfPfyJRdk', port)
     app.run(host='0.0.0.0', port=port)
