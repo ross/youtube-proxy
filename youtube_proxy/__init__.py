@@ -213,7 +213,7 @@ class Transcoder(object):
         # .aac and the mime type audio/aac.
 
 
-level = environ.get('LOGGING', 'INFO')
+level = environ.get('LOGGING_LEVEL', 'INFO')
 if level == 'DEBUG':
     HTTPConnection.debuglevel = 1
 dictConfig(

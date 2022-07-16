@@ -1,0 +1,19 @@
+#!/bin/bash
+
+set -e
+
+if [ -n "$1" ]; then
+    PORT="$1"
+else
+    PORT=9182
+fi
+
+docker build -t youtube-proxy:latest .
+docker rm youtube-proxy-old || true
+docker rename youtube-proxy youtube-proxy-old || true
+docker stop youtube-proxy-old || true
+
+docker run -d --restart=unless-stopped --name youtube-proxy -p $PORT:9182 \
+    -e ENV=prod \
+    -e LOGGING_LEVEL \
+    youtube-proxy:latest
