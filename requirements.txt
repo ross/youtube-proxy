@@ -9,4 +9,5 @@ importlib==metadata-4.12.0
 itsdangerous==2.1.2
 requests==2.28.1
 urllib3==1.26.10
+waitress==2.1.2
 zipp==3.8.1

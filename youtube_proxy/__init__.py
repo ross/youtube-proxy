@@ -238,16 +238,14 @@ dictConfig(
     }
 )
 
-app = Flask('sonos-proxy')
 
+def create_app():
+    app = Flask('sonos-proxy')
 
-@app.route('/<string:vid>')
-def youtube(vid):
-    yt = YouTube(vid)
-    return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
+    @app.route('/<string:vid>')
+    def youtube(vid):
+        yt = YouTube(vid)
+        return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
 
-
-if __name__ == '__main__':
-    port = int(environ.get('PORT', 9182))
-    getLogger().info('Example URL: http://<host-fqdn>:%d/jfKfPfyJRdk', port)
-    app.run(host='0.0.0.0', port=port)
+    getLogger().info('Example URL: http://<host-fqdn>:<port>/jfKfPfyJRdk')
+    return app
