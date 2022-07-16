@@ -230,5 +230,5 @@ def youtube(vid):
 
 if __name__ == '__main__':
     port = int(environ.get('PORT', 8082))
-    print(f'http://localhost:{port}/jfKfPfyJRdk')
+    print(f'e.g. http://<host-fqdn>:{port}/jfKfPfyJRdk')
     app.run(host='0.0.0.0', port=port)
