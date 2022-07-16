@@ -220,7 +220,7 @@ getLogger('urllib3.connectionpool').level = logging.INFO
 app = Flask('sonos-proxy')
 
 
-@app.route('/play/<string:vid>')
+@app.route('/<string:vid>')
 def youtube(vid):
     yt = YouTube('jfKfPfyJRdk')
     return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
