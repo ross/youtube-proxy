@@ -3,8 +3,10 @@
 # Based loosely off of https://www.deadf00d.com/post/how-i-hacked-sonos-and-youtube-the-same-day.html
 # and pytube
 
+from flask import Flask, Response
 from json import dumps
 from logging import getLogger
+from os import environ
 from requests import Session
 from struct import unpack
 from time import sleep, time
@@ -217,7 +219,16 @@ getLogger('urllib3.connectionpool').level = logging.INFO
 # from http.client import HTTPConnection  # py3
 # HTTPConnection.debuglevel = 1
 
-yt = YouTube('jfKfPfyJRdk')
-with open('tmp/stream.aac', 'wb') as fh:
-    for chunk in Transcoder(yt).acc_audio():
-        fh.write(chunk)
+app = Flask('sonos-proxy')
+
+
+@app.route('/play/<string:vid>')
+def youtube(vid):
+    yt = YouTube('jfKfPfyJRdk')
+    return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
+
+
+if __name__ == '__main__':
+    port = int(environ.get('PORT', 8082))
+    print(f'http://localhost:{port}/jfKfPfyJRdk')
+    app.run(host='0.0.0.0', port=port)
