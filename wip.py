@@ -222,7 +222,7 @@ app = Flask('sonos-proxy')
 
 @app.route('/<string:vid>')
 def youtube(vid):
-    yt = YouTube('jfKfPfyJRdk')
+    yt = YouTube(vid)
     return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
 
 
