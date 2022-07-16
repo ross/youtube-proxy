@@ -180,8 +180,6 @@ class Transcoder(object):
         # possible
         self.log.info('acc_audio: ')
         for chunk in self.youtube.stream_best_audio_mp4():
-            with open('tmp/stream.mp4', 'wb') as fh:
-                fh.write(chunk)
             # skip the header
             header_size = unpack('>i', chunk[0:4])[0]
             # skip over the header, we won't be using it
