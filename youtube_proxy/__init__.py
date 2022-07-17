@@ -3,14 +3,18 @@
 # Based loosely off of https://www.deadf00d.com/post/how-i-hacked-sonos-and-youtube-the-same-day.html
 # and pytube
 
+from av import open as av_open
+from datetime import datetime
 from flask import Flask, Response
 from http.client import HTTPConnection  # py3
+from io import BytesIO, StringIO
 from json import dumps
 from logging import getLogger
 from logging.config import dictConfig
 from os import environ
 from requests import Session
 from struct import unpack
+from threading import Event, Thread
 from time import sleep, time
 
 
@@ -56,7 +60,7 @@ class YouTube(object):
                 ),
                 encoding='utf-8',
             )
-            resp = self._sess.post(url, params=params, data=context)
+            resp = self._sess.post(url, params=params, data=context, timeout=10)
             resp.raise_for_status()
             self._vid_info = resp.json()
         return self._vid_info
@@ -111,7 +115,7 @@ class YouTube(object):
         # TODO: live_chunk_readahead
         while True:
             start = time()
-            resp = self._sess.get(url)
+            resp = self._sess.get(url, timeout=5)
             resp.raise_for_status()
             yield resp.content
             elapsed = time() - start
@@ -213,8 +217,8 @@ class Transcoder(object):
         # .aac and the mime type audio/aac.
 
 
-level = environ.get('LOGGING_LEVEL', 'INFO')
-if level == 'DEBUG':
+level = environ.get('LOGGING_LEVEL', 'INFO').upper()
+if environ.get('LOGGING_HTTP_DEBUG', False):
     HTTPConnection.debuglevel = 1
 dictConfig(
     {
@@ -239,6 +243,140 @@ dictConfig(
 )
 
 
+# TODO: thread safety...
+class EvictingDict(dict):
+    def __init__(self, maxlen):
+        super().__init__()
+        self.maxlen = maxlen
+
+    def append(self, k, v):
+        if len(self) >= self.maxlen:
+            # we need to pop something off first
+            oldest = list(self.keys())[0]
+            del self[oldest]
+        self[k] = v
+
+
+class Segment(object):
+    def __init__(self, sequence, ts, mimetype):
+        self.sequence = sequence
+        self.ts = ts
+        self.mimetype = mimetype
+
+
+class HlsStream(Thread):
+    _streams = {}
+
+    @classmethod
+    def get(cls, vid):
+        if vid in cls._streams:
+            return cls._streams[vid]
+
+        def cleanup():
+            # TODO: locking is probably needed here
+            del cls._streams[vid]
+
+        stream = HlsStream(YouTube(vid), cleanup)
+        stream.start()
+        cls._streams[vid] = stream
+
+        return stream
+
+    def __init__(self, youtube, cleanup, keepalive=30):
+        name = f'YouTube[{youtube.id}]'
+        super().__init__(name=name)
+        self.log = getLogger(name)
+
+        self.youtube = youtube
+        self.cleanup = cleanup
+        self.keepalive = keepalive
+
+        self._segments = EvictingDict(maxlen=5)
+
+        self.extend()
+
+        self.ready = Event()
+
+    @property
+    def bandwidth(self):
+        # TODO: get this from stream bitrate
+        return 44100
+
+    @property
+    def codecs(self):
+        # TODO: get this from stream mimeType
+        return 'mp4a.40.2'
+
+    @property
+    def target_duration(self):
+        # TODO: get this from stream targetDurationSec
+        return 5
+
+    @property
+    def datetime_utc(self):
+        # TODO: this should be the time of the first media segment
+        return datetime.utcnow().isoformat()
+
+    @property
+    def segments(self):
+        self.extend()
+        return self._segments
+
+    def extend(self):
+        now = time()
+        self.lifetime = now + self.keepalive
+        self.log.debug('extend: lifetime=%f, now=%f', self.lifetime, now)
+
+    def start(self):
+        super().start()
+        # TODO: timeout and error
+        self.ready.wait()
+
+    def run(self):
+        self.log.info('run: starting')
+
+        sequence = 0
+        chunk_iter = self.youtube.stream_best_audio_mp4()
+        chunk = next(chunk_iter, None)
+        while chunk and time() < self.lifetime:
+            self.log.debug('run: chunk=***, sequence=%d', sequence)
+
+            source_buf = BytesIO()
+            source_buf.write(chunk)
+            source_buf.seek(0)
+            source = av_open(source_buf)
+
+            target_buf = BytesIO()
+            target = av_open(target_buf, mode='w', format='mpegts')
+
+            # TODO: set this to the video title
+            target.metadata['title'] = 'YouTube-Proxy'
+
+            source_stream = source.streams.audio[0]
+            target_stream = target.add_stream(template=source_stream)
+
+            for packet in source.demux(source_stream):
+                if packet.dts is None:
+                    continue
+                packet.stream = target_stream
+                target.mux(packet)
+
+            source.close()
+            target.close()
+
+            segment = Segment(sequence, target_buf.getvalue(), 'video/MP2T')
+            self._segments.append(sequence, segment)
+            sequence += 1
+
+            self.ready.set()
+
+            chunk = next(chunk_iter, None)
+
+        self.log.info('run: cleaning up')
+        self.cleanup()
+        self.log.info('run: ending')
+
+
 def create_app():
     app = Flask('sonos-proxy')
 
@@ -246,6 +384,56 @@ def create_app():
     def youtube(vid):
         yt = YouTube(vid)
         return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
+
+    @app.route('/hls/<string:vid>')
+    def hls(vid):
+        stream = HlsStream.get(vid)
+
+        return Response(
+            f'''#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH={stream.bandwidth},CODECS="{stream.codecs}"
+stream/{vid}
+''',
+            mimetype='application/x-mpegurl',
+        )
+
+    @app.route('/hls/stream/<string:vid>')
+    def hls_stream(vid):
+        stream = HlsStream.get(vid)
+
+        segments = list(stream.segments.items())
+        # TODO: what if there's no sequences
+        target_duration = stream.target_duration
+        datetime_utc = stream.datetime_utc
+        buf = StringIO()
+        buf.write(
+            f'''
+#EXTM3U
+#EXT-X-VERSION:3
+## Created by youtube-proxy
+#EXT-X-MEDIA-SEQUENCE:{segments[0][0]}
+#EXT-X-INDEPENDENT-SEGMENTS
+#EXT-X-TARGETDURATION:{target_duration}
+#EXT-X-PROGRAM-DATE-TIME:{datetime_utc}
+'''
+        )
+        for sequence, _ in segments:
+            buf.write(f'#EXTINF:{target_duration:0.1f}, no desc\n')
+            buf.write(vid)
+            buf.write('-')
+            buf.write(f'{sequence}')
+            buf.write('.ts\n')
+        resp = Response(
+            buf.getvalue(), mimetype='application/vnd.apple.mpegurl'
+        )
+        resp.cache_control.max_age = 1
+        return resp
+
+    @app.route('/hls/stream/<string:vid>-<int:sequence>.ts')
+    def hls_stream_ts(vid, sequence):
+        segment = HlsStream.get(vid).segments[sequence]
+        return Response(segment.ts, mimetype=segment.mimetype)
 
     getLogger().info('Example URL: http://<host-fqdn>:<port>/jfKfPfyJRdk')
     return app

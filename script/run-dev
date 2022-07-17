@@ -1,0 +1,8 @@
+#!/bin/bash
+
+set -e
+
+export LOGGING_LEVEL=debug
+export FLASK_ENV=development
+export FLASK_APP='youtube_proxy:create_app'
+flask run --port 9182 $@
