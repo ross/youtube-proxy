@@ -120,26 +120,33 @@ func (t *Transcoder)Transcode(filename string) {
 
 	// Add an elementary stream
 	err = mx.AddElementaryStream(astits.PMTElementaryStream{
-		ElementaryPID: 257,
+		ElementaryPID: 256,
 		StreamType:    astits.StreamTypeAACAudio,
 	})
 	check(err)
 
-	mx.SetPCRPID(257)
+	mx.SetPCRPID(256)
 
 	// Write tables
 	// Using that function is not mandatory, WriteData will retransmit tables from time to time
 	mx.WriteTables()
 
+	pcr := int64(1 * 90000)
 	af := &astits.PacketAdaptationField{
 		RandomAccessIndicator: true,
 		HasPCR: true,
-		PCR: &astits.ClockReference{Base: int64(0)},
+		PCR: &astits.ClockReference{Base: pcr},
 	}
 
-	faac, err := os.Create("tmp/stream-go.aac")
+	faac, err := os.Create("tmp/stream.aac")
     check(err)
+	defer faac.Close()
 
+	tpf := 4.97 / 215.0
+	fmt.Printf("tpf=%f\n", tpf)
+	i := 0
+
+	data := make([]byte, 0)
 	for frame := range frameCh {
 		n := len(frame)
 		fmt.Printf("received frame=*** %d\n", n)
@@ -162,39 +169,42 @@ func (t *Transcoder)Transcode(filename string) {
 			// 1111 1100 - 6
 			0xfc,
 		}
-		fmt.Printf("before header=%x %b\n", header, header)
-		header[3] |= byte(n >> 11)
+		fmt.Printf("before header=%0x %0b %d\n", header, header, n)
+		header[3] |= byte(n >> 11) & 0x3
 		header[4] |= byte(n >> 3)
 		header[5] |= byte(n << 5)
-		fmt.Printf(" after header=%x %b\n", header, header)
+		fmt.Printf(" after header=%0x %0b\n", header, header)
 
-		n, err := faac.Write(append(header, frame...))
+		n, err := faac.Write(header)
+		check(err)
+		n, err = faac.Write(frame)
 		check(err)
 
 		fmt.Printf("%x + %x = %x\n", header, frame[:4], append(header, frame[:4]...))
 
 		// Write data
+		pts := tpf * float64(i)
+		fmt.Printf("pts=%f\n", pts)
+		data = append(header, frame...)
 		n, err = mx.WriteData(&astits.MuxerData{
-			PID: 257,
+			PID: 256,
 			AdaptationField: af,
 			PES: &astits.PESData{
 				Header: &astits.PESHeader{
 					OptionalHeader: &astits.PESOptionalHeader{
 						MarkerBits:      2,
 						PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-						PTS:             &astits.ClockReference{Base: int64(0)},
+						PTS:             &astits.ClockReference{Base: int64(pts * 90000) + pcr},
 					},
-					PacketLength: uint16(n + 8),
 					StreamID:     192, // = audio
 				},
-				Data: append(header, frame...),
+				Data: data,
 			},
 		})
 		check(err)
 		fmt.Printf("  wrote %d\n", n)
+		i += 1
 	}
-
-	cancel()
 }
 
 func main() {

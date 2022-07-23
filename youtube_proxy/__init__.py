@@ -203,7 +203,7 @@ class Transcoder(object):
                     mdat = Mdat(atom, trun)
                     # https://wiki.multimedia.cx/index.php/ADTS
                     header_fmt = (
-                        '111111111111000101010000100000{:013b}1111111111100'
+                        '11111111 11110001 01010000 100000xx xxxxxxxx xxx11111 11111100'
                     )
                     for frame in mdat.frames:
                         header = int(
