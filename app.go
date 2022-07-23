@@ -26,8 +26,8 @@ func NewTranscoder() *Transcoder {
 	return &Transcoder{}
 }
 
-func (t *Transcoder)processAtom(buf []byte, ch chan<- []byte) {
-	for ; len(buf) > 0; {
+func (t *Transcoder) processAtom(buf []byte, ch chan<- []byte) {
+	for len(buf) > 0 {
 		// atom size
 		atomSize := binary.BigEndian.Uint32(buf[:4])
 		fmt.Printf("atomSize=%d\n", atomSize)
@@ -53,7 +53,7 @@ func (t *Transcoder)processAtom(buf []byte, ch chan<- []byte) {
 			// skip to the frames section
 			atomData = atomData[12:]
 			for i := uint32(0); i < sampleCount; i++ {
-				t.frameSizes[i] = binary.BigEndian.Uint32(atomData[i*4:i*4+4])
+				t.frameSizes[i] = binary.BigEndian.Uint32(atomData[i*4 : i*4+4])
 				expected += t.frameSizes[i]
 				fmt.Printf("  trun.frameSizes[%d]=%d\n", i, t.frameSizes[i])
 			}
@@ -77,14 +77,14 @@ func (t *Transcoder)processAtom(buf []byte, ch chan<- []byte) {
 	}
 }
 
-func (t *Transcoder)atomize(buf []byte, ch chan<- []byte) {
+func (t *Transcoder) atomize(buf []byte, ch chan<- []byte) {
 	defer close(ch)
 	t.processAtom(buf, ch)
 }
 
-func (t *Transcoder)Transcode(filename string) {
+func (t *Transcoder) Transcode(filename string) {
 	buf, err := os.ReadFile(filename)
-    check(err)
+	check(err)
 
 	// skip the header
 	headerSize := binary.BigEndian.Uint32(buf[0:4])
@@ -134,12 +134,12 @@ func (t *Transcoder)Transcode(filename string) {
 	pcr := int64(1 * 90000)
 	af := &astits.PacketAdaptationField{
 		RandomAccessIndicator: true,
-		HasPCR: true,
-		PCR: &astits.ClockReference{Base: pcr},
+		HasPCR:                true,
+		PCR:                   &astits.ClockReference{Base: pcr},
 	}
 
 	faac, err := os.Create("tmp/stream.aac")
-    check(err)
+	check(err)
 	defer faac.Close()
 
 	tpf := 4.97 / 215.0
@@ -170,7 +170,7 @@ func (t *Transcoder)Transcode(filename string) {
 			0xfc,
 		}
 		fmt.Printf("before header=%0x %0b %d\n", header, header, n)
-		header[3] |= byte(n >> 11) & 0x3
+		header[3] |= byte(n>>11) & 0x3
 		header[4] |= byte(n >> 3)
 		header[5] |= byte(n << 5)
 		fmt.Printf(" after header=%0x %0b\n", header, header)
@@ -187,16 +187,16 @@ func (t *Transcoder)Transcode(filename string) {
 		fmt.Printf("pts=%f\n", pts)
 		data = append(header, frame...)
 		n, err = mx.WriteData(&astits.MuxerData{
-			PID: 256,
+			PID:             256,
 			AdaptationField: af,
 			PES: &astits.PESData{
 				Header: &astits.PESHeader{
 					OptionalHeader: &astits.PESOptionalHeader{
 						MarkerBits:      2,
 						PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-						PTS:             &astits.ClockReference{Base: int64(pts * 90000) + pcr},
+						PTS:             &astits.ClockReference{Base: int64(pts*90000) + pcr},
 					},
-					StreamID:     192, // = audio
+					StreamID: 192, // = audio
 				},
 				Data: data,
 			},
