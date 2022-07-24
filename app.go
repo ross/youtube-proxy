@@ -1,14 +1,13 @@
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
 
+	"github.com/abema/go-mp4"
 	"github.com/asticode/go-astits"
 )
 
@@ -26,77 +25,77 @@ func NewTranscoder() *Transcoder {
 	return &Transcoder{}
 }
 
-func (t *Transcoder) processAtom(buf []byte, ch chan<- []byte) {
-	for len(buf) > 0 {
-		// atom size
-		atomSize := binary.BigEndian.Uint32(buf[:4])
-		fmt.Printf("atomSize=%d\n", atomSize)
+type Frame struct {
+	Time float64
+	Data []byte
+}
 
-		// atom type
-		atomType := buf[4:8]
-		fmt.Printf("atomType=%s\n", atomType)
+func (t *Transcoder) read(filename string, ch chan Frame) {
+	defer close(ch)
 
-		// read atom data
-		atomData := buf[8:atomSize]
-		fmt.Printf("atomData=%x\n", atomData)
+	f, err := os.Open(filename)
+	check(err)
 
-		if bytes.Compare(atomType, []byte{'m', 'o', 'o', 'f'}) == 0 {
-			t.processAtom(atomData, ch)
-		} else if bytes.Compare(atomType, []byte{'t', 'r', 'a', 'f'}) == 0 {
-			t.processAtom(atomData, ch)
-		} else if bytes.Compare(atomType, []byte{'t', 'r', 'u', 'n'}) == 0 {
-			// get our frame sizes
-			sampleCount := binary.BigEndian.Uint32(atomData[4:8])
-			fmt.Printf("trun.sampleCount=%d\n", sampleCount)
-			t.frameSizes = make([]uint32, sampleCount)
-			expected := uint32(0)
-			// skip to the frames section
-			atomData = atomData[12:]
-			for i := uint32(0); i < sampleCount; i++ {
-				t.frameSizes[i] = binary.BigEndian.Uint32(atomData[i*4 : i*4+4])
-				expected += t.frameSizes[i]
-				fmt.Printf("  trun.frameSizes[%d]=%d\n", i, t.frameSizes[i])
-			}
-			fmt.Printf("  trun.expected=%d\n", expected)
-		} else if bytes.Compare(atomType, []byte{'m', 'd', 'a', 't'}) == 0 {
-			// emit our frames
-			frameBuf := atomData
-			fmt.Printf("frameBuf=%d\n", len(frameBuf))
-			used := uint32(0)
-			for i, frameSize := range t.frameSizes {
-				frame := frameBuf[:frameSize]
-				fmt.Printf("  frame[%d]=*** %d/%d\n", i, frameSize, len(frame))
-				used += frameSize
-				ch <- frame
-				frameBuf = frameBuf[frameSize:]
-				fmt.Printf("    %d left=%d, used=%d\n", i, len(frameBuf), used)
-			}
+	// find the sample rate
+	boxes, err := mp4.ExtractBoxWithPayload(f, nil, mp4.BoxPath{mp4.BoxTypeMoov(), mp4.BoxTypeMvhd()})
+	check(err)
+	tkhd := boxes[0].Payload.(*mp4.Mvhd)
+	timescale := tkhd.Timescale
+	fmt.Printf("timescale=%d\n", timescale)
+
+	// find default sample duration
+	boxes, err = mp4.ExtractBoxWithPayload(f, nil, mp4.BoxPath{mp4.BoxTypeMoof(), mp4.BoxTypeTraf(), mp4.BoxTypeTfhd()})
+	check(err)
+	tfhd := boxes[0].Payload.(*mp4.Tfhd)
+	defaultSampleDuration := tfhd.DefaultSampleDuration
+	fmt.Printf("defaultSampleDuration=%d\n", defaultSampleDuration)
+
+	// find base media decode time
+	boxes, err = mp4.ExtractBoxWithPayload(f, nil, mp4.BoxPath{mp4.BoxTypeMoof(), mp4.BoxTypeTraf(), mp4.BoxTypeTfdt()})
+	check(err)
+	tfdt := boxes[0].Payload.(*mp4.Tfdt)
+	baseMediaDecodeTime := tfdt.BaseMediaDecodeTimeV1
+	fmt.Printf("baseMediaDecodeTime=%d\n", baseMediaDecodeTime)
+
+	// grab the audio data
+	boxes, err = mp4.ExtractBoxWithPayload(f, nil, mp4.BoxPath{mp4.BoxTypeMdat()})
+	check(err)
+	mdat := boxes[0].Payload.(*mp4.Mdat)
+
+	// find sample count and entries
+	boxes, err = mp4.ExtractBoxWithPayload(f, nil, mp4.BoxPath{mp4.BoxTypeMoof(), mp4.BoxTypeTraf(), mp4.BoxTypeTrun()})
+	check(err)
+	trun := boxes[0].Payload.(*mp4.Trun)
+	sampleCount := trun.SampleCount
+	fmt.Printf("sampleCount=%d\n", sampleCount)
+	entries := trun.Entries
+	fmt.Printf("entries=%v\n", entries)
+
+	// walk the entries turning them into their time & (aac) data
+	// TODO: handle non-default duration, entry.SampleDuration?
+	entryDuration := float64(defaultSampleDuration) / float64(timescale)
+	fmt.Printf("entryDuration=%f\n", entryDuration)
+	baseDecodeTime := float64(baseMediaDecodeTime) / float64(timescale)
+	fmt.Printf("baseDecodeTime=%f\n", baseDecodeTime)
+	data := mdat.Data
+	for i, entry := range entries {
+		time := baseDecodeTime + entryDuration*float64(i)
+		fmt.Printf("entry[%d].=%+v\n  time=%f\n", i, entry, time)
+		frame := data[0:entry.SampleSize]
+		fmt.Printf("  frame=%x\n", frame[:8])
+		data = data[entry.SampleSize:]
+		ch <- Frame{
+			Time: time,
+			Data: frame,
 		}
-
-		buf = buf[atomSize:]
 	}
 }
 
-func (t *Transcoder) atomize(buf []byte, ch chan<- []byte) {
-	defer close(ch)
-	t.processAtom(buf, ch)
-}
-
 func (t *Transcoder) Transcode(filename string) {
-	buf, err := os.ReadFile(filename)
-	check(err)
-
-	// skip the header
-	headerSize := binary.BigEndian.Uint32(buf[0:4])
-	fmt.Printf("headerSize=%d\n", headerSize)
-	fmt.Printf("before=%x\n", buf[:32])
-	buf = buf[headerSize:]
-	fmt.Printf("after=%x\n", buf[:32])
-
-	frameCh := make(chan []byte, 5)
+	frameCh := make(chan Frame, 5)
 
 	go func() {
-		t.atomize(buf, frameCh)
+		t.read(filename, frameCh)
 	}()
 
 	// Create a cancellable context in case you want to stop writing packets/data any time you want
@@ -119,7 +118,7 @@ func (t *Transcoder) Transcode(filename string) {
 	mx := astits.NewMuxer(ctx, f)
 
 	// Add an elementary stream
-	err = mx.AddElementaryStream(astits.PMTElementaryStream{
+	err := mx.AddElementaryStream(astits.PMTElementaryStream{
 		ElementaryPID: 256,
 		StreamType:    astits.StreamTypeAACAudio,
 	})
@@ -131,24 +130,23 @@ func (t *Transcoder) Transcode(filename string) {
 	// Using that function is not mandatory, WriteData will retransmit tables from time to time
 	mx.WriteTables()
 
-	pcr := int64(1 * 90000)
 	af := &astits.PacketAdaptationField{
 		RandomAccessIndicator: true,
 		HasPCR:                true,
-		PCR:                   &astits.ClockReference{Base: pcr},
+		// PCR set when we see the first frame below
 	}
 
 	faac, err := os.Create("tmp/stream.aac")
 	check(err)
 	defer faac.Close()
 
-	tpf := 4.97 / 215.0
-	fmt.Printf("tpf=%f\n", tpf)
-	i := 0
-
-	data := make([]byte, 0)
+	firstFrame := true
 	for frame := range frameCh {
-		n := len(frame)
+		if firstFrame {
+			af.PCR = &astits.ClockReference{Base: int64(frame.Time * 90000)}
+			firstFrame = false
+		}
+		n := len(frame.Data)
 		fmt.Printf("received frame=*** %d\n", n)
 		// include the header size
 		n += 7
@@ -169,23 +167,17 @@ func (t *Transcoder) Transcode(filename string) {
 			// 1111 1100 - 6
 			0xfc,
 		}
-		fmt.Printf("before header=%0x %0b %d\n", header, header, n)
 		header[3] |= byte(n>>11) & 0x3
 		header[4] |= byte(n >> 3)
 		header[5] |= byte(n << 5)
-		fmt.Printf(" after header=%0x %0b\n", header, header)
 
 		n, err := faac.Write(header)
 		check(err)
-		n, err = faac.Write(frame)
+		n, err = faac.Write(frame.Data)
 		check(err)
 
-		fmt.Printf("%x + %x = %x\n", header, frame[:4], append(header, frame[:4]...))
-
 		// Write data
-		pts := tpf * float64(i)
-		fmt.Printf("pts=%f\n", pts)
-		data = append(header, frame...)
+		data := append(header, frame.Data...)
 		n, err = mx.WriteData(&astits.MuxerData{
 			PID:             256,
 			AdaptationField: af,
@@ -194,7 +186,7 @@ func (t *Transcoder) Transcode(filename string) {
 					OptionalHeader: &astits.PESOptionalHeader{
 						MarkerBits:      2,
 						PTSDTSIndicator: astits.PTSDTSIndicatorOnlyPTS,
-						PTS:             &astits.ClockReference{Base: int64(pts*90000) + pcr},
+						PTS:             &astits.ClockReference{Base: int64(frame.Time * 90000)},
 					},
 					StreamID: 192, // = audio
 				},
@@ -202,8 +194,6 @@ func (t *Transcoder) Transcode(filename string) {
 			},
 		})
 		check(err)
-		fmt.Printf("  wrote %d\n", n)
-		i += 1
 	}
 }
 
