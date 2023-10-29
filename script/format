@@ -2,7 +2,7 @@
 
 set -e
 
-SOURCES=$(find *.py youtube_proxy -name "*.py")
+SOURCES=$(find youtube_proxy -name "*.py")
 
 . env/bin/activate
 

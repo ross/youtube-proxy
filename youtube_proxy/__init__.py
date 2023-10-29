@@ -5,21 +5,19 @@
 
 from flask import Flask, Response
 from http.client import HTTPConnection  # py3
-from json import dumps
 from logging import getLogger
 from logging.config import dictConfig
 from os import environ
+from pytube import YouTube as PyYouTube
 from requests import Session
 from struct import unpack
 from time import sleep, time
 
 
-class YouTube(object):
+class YouTube(PyYouTube):
     def __init__(self, id):
         self.log = getLogger(f'YouTube[{id}]')
-        self.log.info('__init__:')
-
-        self.id = id
+        self.log.info('__init__: id=%s', id)
 
         sess = Session()
         sess.headers = {
@@ -29,99 +27,62 @@ class YouTube(object):
         }
         self._sess = sess
 
-        self._vid_info = None
-        self._streaming_data = None
+        super().__init__(f'https://youtu.be/{id}')
 
-    @property
-    def info(self):
-        if self._vid_info is None:
-            self.log.info('info: fetching')
-            url = 'https://www.youtube.com/youtubei/v1/player'
-            params = {
-                'key': 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8',
-                'contentCheckOk': True,
-                'racyCheckOk': True,
-                'videoId': self.id,
-            }
-            context = bytes(
-                dumps(
-                    {
-                        'context': {
-                            'client': {
-                                'clientName': 'ANDROID',
-                                'clientVersion': '16.20',
-                            }
-                        }
-                    }
-                ),
-                encoding='utf-8',
-            )
-            resp = self._sess.post(url, params=params, data=context)
-            resp.raise_for_status()
-            self._vid_info = resp.json()
-        return self._vid_info
-
-    @property
-    def video_details(self):
-        return self.info['videoDetails']
-
-    @property
-    def author(self):
-        return self.video_details['author']
-
-    @property
-    def is_live(self):
-        return self.video_details['isLive']
-
-    @property
-    def live_chunk_readahead(self):
-        return self.video_details['liveChunkReadahead']
-
-    @property
-    def short_description(self):
-        return self.video_details['shortDescription']
-
-    @property
-    def thumbnails(self):
-        return self.video_details['thumbnail']['thumbnails']
-
-    @property
-    def title(self):
-        return self.video_details['title']
-
-    @property
-    def streaming_data(self):
-        if self._streaming_data is None:
-            sd = self.info['streamingData']['adaptiveFormats']
-            sd.sort(key=lambda s: s['bitrate'], reverse=True)
-            self._streaming_data = sd
-        return self._streaming_data
+    def check_availability(self):
+        # parent class blows up b/c of live stream, that's what we're expecting
+        # here ...
+        pass
 
     # https://docs.fileformat.com/video/mp4/#:~:text=Here%20is%20a%20list%20of%20second%2Dlevel%20atoms%20used%20in,the%20user%20and%20track%20information.
     def stream_best_audio_mp4(self):
         self.log.debug('stream_best_audio_mp4: ')
-        best = next(
-            s
-            for s in self.streaming_data
-            if s['mimeType'].startswith('audio/mp4')
-        )
-        url = best['url']
-        target_duration = best['targetDurationSec']
-        # TODO: stream in chunks
-        # TODO: live_chunk_readahead
+
+        audio = list(self.streams.filter(adaptive=True, only_audio=True))
+        audio.sort(key=lambda s: int(s.abr.replace('kbps', '')), reverse=True)
+        best = audio[0]
+        url = best.url
+
+        # assume 5s chunks
+        duration = 5
+        # we want the first chunk now
+        expected = time()
         while True:
             start = time()
-            resp = self._sess.get(url)
+            self.log.debug('stream_best_audio_mp4: request start=%f', start)
+
+            resp = self._sess.get(url, stream=True, timeout=duration / 2)
             resp.raise_for_status()
-            yield resp.content
-            elapsed = time() - start
-            needed = target_duration - elapsed
-            self.log.debug('stream_best_audio_mp4: sleeping %f', needed)
-            sleep(needed)
+            for chunk in resp.iter_content(chunk_size=None):
+                self.log.debug('stream_best_audio_mp4: chunk=%d', len(chunk))
+                if chunk:
+                    yield chunk
+
+            # how long did the request take
+            now = time()
+            elapsed = now - start
+            self.log.debug(
+                'stream_best_audio_mp4:   now=%f, elapsed=%f', now, elapsed
+            )
+
+            # we expect the next chunk a duration into the future
+            expected += duration
+            # how far are we from the point we expect we'll need another chunk
+            needed = expected - now
+            # adjust needed for the time the request is likely to take
+            needed -= elapsed + 1
+            self.log.debug(
+                'stream_best_audio_mp4:   expected=%f, needed=%f',
+                expected,
+                needed,
+            )
+
+            if needed > 0:
+                sleep(needed)
 
 
 class Trun(object):
-    log = getLogger(f'Trun')
+    log = getLogger('Trun')
 
     def __init__(self, atom):
         self.flags = unpack('>i', atom[0:4])[0]
@@ -135,7 +96,7 @@ class Trun(object):
 
 
 class Mdat(object):
-    log = getLogger(f'Mdat')
+    log = getLogger('Mdat')
 
     def __init__(self, atom, trun):
         self.atom = atom
@@ -152,7 +113,7 @@ class Mdat(object):
 
 
 class Transcoder(object):
-    log = getLogger(f'Transcoder')
+    log = getLogger('Transcoder')
 
     def __init__(self, youtube):
         self.log.info('__init__:')
