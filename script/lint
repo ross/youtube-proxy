@@ -1,0 +1,9 @@
+#!/bin/sh
+
+set -e
+
+SOURCES=$(find youtube_proxy -name "*.py")
+
+. env/bin/activate
+
+pyflakes $SOURCES
