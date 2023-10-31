@@ -4,7 +4,7 @@
 # and pytube
 
 from .transcode import Transcoder
-from .youtube import YouTube
+from .youtube import YouTube, YouTubeStreamer
 
 
 from flask import Flask, Response
@@ -45,8 +45,8 @@ def create_app():
 
     @app.route('/<string:vid>')
     def youtube(vid):
-        yt = YouTube(vid)
-        return Response(Transcoder(yt).acc_audio(), mimetype='audio/aac')
+        yts = YouTubeStreamer(YouTube(vid))
+        return Response(Transcoder(yts).acc_audio(), mimetype='audio/aac')
 
     getLogger().info('Example URL: http://<host-fqdn>:<port>/jfKfPfyJRdk')
     return app

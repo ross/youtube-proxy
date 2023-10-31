@@ -334,14 +334,21 @@ def box_up(data):
 class Mp4(_ContainerMixin):
     log = getLogger('Mp4')
 
+    def __init__(self, data):
+        _ContainerMixin.__init__(self, data)
+        self._time = None
+        self._duration = None
+
     @property
     def time(self):
-        # TODO: multiple support?
-        timescale = next(next(self.get('moov')).get('mvhd')).timescale
-        moof = next(self.get('moof'))
-        traf = next(moof.get('traf'))
-        tfdt = next(traf.get('tfdt'))
-        return tfdt.base_media_decode_time / float(timescale)
+        if self._time is None:
+            # TODO: multiple support?
+            timescale = next(next(self.get('moov')).get('mvhd')).timescale
+            moof = next(self.get('moof'))
+            traf = next(moof.get('traf'))
+            tfdt = next(traf.get('tfdt'))
+            self._time = tfdt.base_media_decode_time / float(timescale)
+        return self._time
 
     @property
     def frames(self):
@@ -360,12 +367,16 @@ class Mp4(_ContainerMixin):
 
     @property
     def duration(self):
-        # TODO: what about multiples
-        timescale = next(next(self.get('moov')).get('mvhd')).timescale
-        traf = next(next(self.get('moof')).get('traf'))
-        sample_duration = next(traf.get('tfhd')).default_sample_duration
-        sample_count = next(traf.get('trun')).sample_count
-        return float(sample_count * sample_duration) / float(timescale)
+        if self._duration is None:
+            # TODO: what about multiples
+            timescale = next(next(self.get('moov')).get('mvhd')).timescale
+            traf = next(next(self.get('moof')).get('traf'))
+            sample_duration = next(traf.get('tfhd')).default_sample_duration
+            sample_count = next(traf.get('trun')).sample_count
+            self._duration = float(sample_count * sample_duration) / float(
+                timescale
+            )
+        return self._duration
 
     def __repr__(self):
         return '\n'.join(str(b) for b in self.boxes)
